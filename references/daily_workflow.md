@@ -66,7 +66,34 @@ python scripts/chat_context.py --date <YYYY-MM-DD>
 
 **3b. 创建临时目录**：`{tempDir}/image_desc_YYYYMMDD/`
 
-**3c. 分批分配 subagent**：将图片路径列表均分给 N 个 subagent（每个 subagent 处理约 5 张图片），在同一条消息中并行 spawn 所有 subagent。
+**3c. 分批分配 subagent**：将图片路径列表均分给至少 4 个 subagent，在同一条消息中并行 spawn 所有 subagent。
+
+**分组规则**：
+- 总图片数 ≤ 4：每个 subagent 1 张，启动 N 个 subagent
+- 总图片数 5-8：启动 4 个 subagent，均分图片
+- 总图片数 9-20：启动 4 个 subagent，每个处理约 N/4 张
+- 总图片数 > 20：启动 6-8 个 subagent，每个不超过 5 张
+
+**⚠️ 关键：等待 subagent 完成的方式**
+
+所有 subagent **必须**使用 `run_in_background: true` 启动。启动后：
+
+1. **禁止**使用 `sleep` + 文件检查轮询等待结果
+2. **正确做法**：subagent 完成时会自动推送 `<task-notification>` 通知，收到通知后检查输出文件是否生成
+3. 在等待期间，可继续执行不依赖图片结果的工作（如 Step 4 读取共享内容和记忆文档）
+4. 若超过 10 分钟仍未收到通知，再检查输出文件或向用户报告
+
+**错误示例** ❌:
+```
+sleep 30 && ls -la "temp/image_desc_YYYYMMDD/"  # 轮询
+```
+
+**正确示例** ✅:
+```
+// 启动 4 个 subagent (run_in_background: true)
+// 立即继续 Step 4a/4b
+// 收到 <task-notification> 后进入 3d
+```
 
 每个 subagent 的任务指令：
 ```
@@ -117,7 +144,11 @@ print(f'写入 {len(data)} 条描述')
 其中 `data` 字典的 key 为 `file:///原始路径`（保留 file:/// 前缀），value 为描述文本。
 ```
 
-**3d. 等待所有 subagent 完成后执行替换脚本**：
+**3d. 确认所有 subagent 已完成后执行替换脚本**：
+
+检查 `{tempDir}/image_desc_YYYYMMDD/` 下是否所有 `batch_N.json` 文件都已生成（文件数 = subagent 数量）。若部分文件缺失，等待对应的 `<task-notification>` 通知后再继续。
+
+全部就绪后执行替换：
 ```bash
 python scripts/replace_images.py \
   --context {tempDir}/chat_context_YYYYMMDD.md \
